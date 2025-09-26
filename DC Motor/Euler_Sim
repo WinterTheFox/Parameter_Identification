@@ -1,0 +1,47 @@
+clear; clc; close all;
+
+% Parámetros del motor
+R = 1;       % Ohm
+L = 0.5;     % H
+Ke = 0.01;   % V/(rad/s)
+Kt = 0.01;   % Nm/A
+J = 0.01;    % kg*m^2
+B = 0.1;     % Nms
+
+% Tiempo de simulación
+Ts = 0.001;           % paso de muestreo (s)
+Tsim = 2;             % tiempo total (s)
+N = round(Tsim/Ts);   % número de pasos
+t = (0:N-1)*Ts;       % vector de tiempo
+
+% Variables de estado
+i = zeros(1,N);   % corriente
+w = zeros(1,N);   % velocidad angular
+
+% Entrada de voltaje (ejemplo: escalón de 24 V)
+V = 24*ones(1,N);
+
+% Simulación discreta (Euler adelante)
+for k = 1:N-1
+    % Ecuaciones del motor
+    di = (V(k) - R*i(k) - Ke*w(k)) / L;
+    dw = (Kt*i(k) - B*w(k)) / J;
+    
+    % Integración discreta
+    i(k+1) = i(k) + Ts*di;
+    w(k+1) = w(k) + Ts*dw;
+end
+
+% Graficar resultados
+figure;
+subplot(2,1,1);
+plot(t, i, 'LineWidth',1.5);
+xlabel('Tiempo (s)'); ylabel('Corriente (A)');
+title('Corriente del Motor');
+grid on;
+
+subplot(2,1,2);
+plot(t, w, 'r', 'LineWidth',1.5);
+xlabel('Tiempo (s)'); ylabel('\omega (rad/s)');
+title('Velocidad Angular del Motor');
+grid on;
