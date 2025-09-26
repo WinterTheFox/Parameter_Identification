@@ -1,0 +1,178 @@
+clear; clc; close all;
+
+%% Parámetros reales
+R_true  = 1;       % Ohm
+L_true  = 0.5;     % H
+Ke_true = 0.01;    % V/(rad/s)
+Kt_true = 0.01;    % Nm/A
+J_true  = 0.01;    % kg*m^2
+B_true  = 0.1;     % N*m*s
+
+%% Discretización
+Ts = 0.001;      % paso
+Tsim = 2;        % segundos
+N = round(Tsim/Ts);
+t = (0:N-1)*Ts;
+
+% Estados reales
+i = zeros(1,N);
+w = zeros(1,N);
+
+% Entrada
+V = 24*ones(1,N);
+
+%% Inicialización RLS (lambda = 1)
+theta_i = zeros(3,1);      % [theta_i1; theta_i2; theta_i3]
+P_i     = 1e3 * eye(3);
+
+theta_w = zeros(2,1);      % [theta_w1; theta_w2]
+P_w     = 1e3 * eye(2);
+
+theta_i_hist = zeros(3,N);
+theta_w_hist = zeros(2,N);
+
+%% Bucle de simulación + identificación
+for k = 1:N-1
+    % Planta
+    di = (V(k) - R_true*i(k) - Ke_true*w(k)) / L_true;
+    dw = (Kt_true*i(k) - B_true*w(k)) / J_true;
+    i(k+1) = i(k) + Ts * di;
+    w(k+1) = w(k) + Ts * dw;
+
+    %% Identificación - corriente
+    phi_i = [i(k); w(k); V(k)];   % regresor
+    y_i = i(k+1);
+    denom_i = 1 + phi_i' * P_i * phi_i;
+    K_i = (P_i * phi_i) / denom_i;
+    e_i = y_i - theta_i' * phi_i;
+    theta_i = theta_i + K_i * e_i;
+    P_i = P_i - K_i * (phi_i' * P_i);
+
+    %% Identificación - velocidad
+    phi_w = [w(k); i(k)];
+    y_w = w(k+1);
+    denom_w = 1 + phi_w' * P_w * phi_w;
+    K_w = (P_w * phi_w) / denom_w;
+    e_w = y_w - theta_w' * phi_w;
+    theta_w = theta_w + K_w * e_w;
+    P_w = P_w - K_w * (phi_w' * P_w);
+
+    % Guardar
+    theta_i_hist(:,k+1) = theta_i;
+    theta_w_hist(:,k+1) = theta_w;
+end
+
+%% Conversión de theta -> parámetros físicos
+theta_i1 = theta_i_hist(1,:);
+theta_i2 = theta_i_hist(2,:);
+theta_i3 = theta_i_hist(3,:);
+
+% Evitar divisiones por cero: convertir solo cuando theta_i3 suficientemente grande
+eps_th = 1e-9;
+validL = abs(theta_i3) > eps_th;
+
+L_est = nan(1,N);
+R_est = nan(1,N);
+Ke_est = nan(1,N);
+
+L_est(validL) = Ts ./ theta_i3(validL);
+R_est(validL) = ((1 - theta_i1(validL)) ./ Ts) .* L_est(validL);
+Ke_est(validL) = ( -theta_i2(validL) ./ Ts ) .* L_est(validL);
+
+% theta_w = [theta_w1; theta_w2] = [1 - Ts*B/J; Ts*Kt/J]
+theta_w1 = theta_w_hist(1,:);
+theta_w2 = theta_w_hist(2,:);
+
+% Si conoces Kt_true (o Kt_nominal), puedes calcular J y B:
+known_Kt = Kt_true; % <-- si no lo conoces, pon NaN (ej. known_Kt = NaN;)
+
+eps_th2 = 1e-12;
+validJW = abs(theta_w2) > eps_th2;
+
+if ~isnan(known_Kt)
+    J_est = nan(1,N);
+    B_est = nan(1,N);
+    J_est(validJW) = (Ts * known_Kt) ./ theta_w2(validJW);
+    B_est(validJW) = ((1 - theta_w1(validJW)) ./ Ts) .* J_est(validJW);
+else
+    % Si Kt no conocido -> estimamos Kt/J y B/J
+    Kt_over_J_est = nan(1,N);
+    B_over_J_est = nan(1,N);
+    Kt_over_J_est(validJW) = theta_w2(validJW) ./ Ts;      % = Kt/J
+    B_over_J_est(validJW)  = (1 - theta_w1(validJW)) ./ Ts; % = B/J
+end
+
+%% Plots: parámetros eléctricos L,R,Ke
+figure('Name','Estimaciones parámetros eléctricos');
+subplot(3,1,1);
+plot(t, L_est, 'LineWidth', 1.2); hold on;
+yline(L_true,'--k','L real','LineWidth',1);
+xlabel('Tiempo (s)'); ylabel('L (H)'); title('Inercia eléctrica L estimada');
+grid on; legend('L estimada','L real');
+
+subplot(3,1,2);
+plot(t, R_est, 'LineWidth', 1.2); hold on;
+yline(R_true,'--k','R real','LineWidth',1);
+xlabel('Tiempo (s)'); ylabel('R (\Omega)'); title('Resistencia R estimada');
+grid on; legend('R estimada','R real');
+
+subplot(3,1,3);
+plot(t, Ke_est, 'LineWidth', 1.2); hold on;
+yline(Ke_true,'--k','K_e real','LineWidth',1);
+xlabel('Tiempo (s)'); ylabel('K_e (V*s/rad)'); title('Constante f.e.m. K_e estimada');
+grid on; legend('K_e estimada','K_e real');
+
+%% Plots: parámetros mecánicos (J,B) o razones
+if ~isnan(known_Kt)
+    figure('Name','Estimaciones parámetros mecánicos (con Kt conocido)');
+    subplot(2,1,1);
+    plot(t, J_est, 'LineWidth', 1.2); hold on;
+    yline(J_true,'--k','J real','LineWidth',1);
+    xlabel('Tiempo (s)'); ylabel('J (kg*m^2)'); title('Inercia J estimada');
+    grid on; legend('J estimada','J real');
+
+    subplot(2,1,2);
+    plot(t, B_est, 'LineWidth', 1.2); hold on;
+    yline(B_true,'--k','B real','LineWidth',1);
+    xlabel('Tiempo (s)'); ylabel('B (N*m*s/rad)'); title('Fricción B estimada');
+    grid on; legend('B estimada','B real');
+else
+    figure('Name','Estimaciones razones mecánicas (Kt desconocido)');
+    subplot(2,1,1);
+    plot(t, Kt_over_J_est, 'LineWidth', 1.2); 
+    xlabel('Tiempo (s)'); ylabel('K_t / J'); title('Estimación de K_t / J');
+    grid on;
+
+    subplot(2,1,2);
+    plot(t, B_over_J_est, 'LineWidth', 1.2);
+    xlabel('Tiempo (s)'); ylabel('B / J'); title('Estimación de B / J');
+    grid on;
+end
+
+%% Plots adicionales: theta vs theta real (opcional)
+% theta_i reales a comparar:
+theta_i_real = [1 - Ts*R_true/L_true; -Ts*Ke_true/L_true; Ts/L_true];
+theta_w_real = [1 - Ts*B_true/J_true; Ts*Kt_true/J_true];
+
+figure('Name','Theta estimadas vs reales');
+subplot(2,1,1);
+plot(t, theta_i_hist'); hold on;
+yline(theta_i_real(1),'--k'); yline(theta_i_real(2),'--k'); yline(theta_i_real(3),'--k');
+xlabel('Tiempo (s)'); ylabel('\theta_i'); title('Theta (ecuación corriente)');
+legend('\theta_{i1}','\theta_{i2}','\theta_{i3}','theta_i reales');
+grid on;
+
+subplot(2,1,2);
+plot(t, theta_w_hist'); hold on;
+yline(theta_w_real(1),'--k'); yline(theta_w_real(2),'--k');
+xlabel('Tiempo (s)'); ylabel('\theta_w'); title('Theta (ecuación velocidad)');
+legend('\theta_{w1}','\theta_{w2}','theta_w reales');
+grid on;
+
+%% Mensajes finales
+disp('Conversión completada. Revisa las figuras:');
+if ~isnan(known_Kt)
+    disp('Se usó Kt conocido para calcular J y B.');
+else
+    disp('Kt no conocido -> se estimaron Kt/J y B/J (razones).');
+end
